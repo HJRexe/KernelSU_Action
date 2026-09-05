@@ -1,76 +1,107 @@
 #!/bin/bash
-# Patches author: weishu <twsxtd@gmail.com>
-# Shell authon: xiaoleGun <1592501605@qq.com>
-#               bdqllW <bdqllT@gmail.com>
-# Tested kernel versions: 5.4, 4.19, 4.14, 4.9
-# 20240123
+# KernelSU-Next (v3.2.0-legacy) manual syscall hooks for pre-GKI kernels.
+#
+# Rewritten for the KernelSU-Next hook API. The stock script shipped by
+# KernelSU_Action targets the legacy KernelSU 0.9.x API (ksu_handle_vfs_read,
+# no reboot hook, hook-bool guard), which KernelSU-Next >= v3.2.0-legacy no
+# longer recognises -- its Kbuild aborts with:
+#   "No hooks were defined, please integrate manual hooks in your kernel!"
+#
+# Follows the official KernelSU-Next non-GKI integration guide:
+#   https://kernelsu-next.github.io/webpage/pages/how-to-integrate-for-non-gki.html
+# Hooks: ksu_handle_execveat / ksu_handle_faccessat / ksu_handle_sys_read /
+#        ksu_handle_stat / ksu_handle_sys_reboot
+# Anchors verified against LineageOS/android_kernel_oneplus_sdm845
+# lineage-18.1 (msm-4.9, OnePlus 6 enchilada).
+# NOTE: sed addresses must not contain a raw '{' (GNU sed treats it as a
+#       command-group opener and aborts the script), so the exec.c envp hook
+#       anchor is matched by prefix without the brace. Inserted text uses \n
+#       escapes (GNU extension); the closing '}' of a { } group must sit on
+#       its own line, never after an a/i text.
+# Idempotent: a file is skipped once it already contains ksu_handle.
+
+set -euo pipefail
 
 patch_files=(
     fs/exec.c
     fs/open.c
     fs/read_write.c
     fs/stat.c
-    drivers/input/input.c
+    kernel/reboot.c
 )
 
 for i in "${patch_files[@]}"; do
-
-    if grep -q "ksu" "$i"; then
-        echo "Warning: $i contains KernelSU"
+    if [ ! -f "$i" ]; then
+        echo "Warning: $i not found; skipping"
         continue
     fi
+    if grep -q "ksu_handle" "$i"; then
+        echo "Warning: $i already contains KernelSU hooks; skipping"
+        continue
+    fi
+    echo "Patching $i"
 
     case $i in
 
-    # fs/ changes
-    ## exec.c
+    # ------------------------------------------------------------ fs/exec.c
     fs/exec.c)
-        sed -i '/static int do_execveat_common/i\#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n			void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n				 void *argv, void *envp, int *flags);\n#endif' fs/exec.c
-        if grep -q "return __do_execve_file(fd, filename, argv, envp, flags, NULL);" fs/exec.c; then
-            sed -i '/return __do_execve_file(fd, filename, argv, envp, flags, NULL);/i\	#ifdef CONFIG_KSU\n	if (unlikely(ksu_execveat_hook))\n		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n	else\n		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n	#endif' fs/exec.c
-        else
-            sed -i '/if (IS_ERR(filename))/i\	#ifdef CONFIG_KSU\n	if (unlikely(ksu_execveat_hook))\n		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n	else\n		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n	#endif' fs/exec.c
-        fi
+        # 1) extern declaration before do_execve()
+        sed -i '/^int do_execve(struct filename \*filename,$/i\#ifdef CONFIG_KSU\n__attribute__((hot))\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n				void *argv, void *envp, int *flags);\n#endif\n' fs/exec.c
+        # 2) hook call inside do_execve(), right after its envp initialiser
+        sed -i '/^int do_execve(struct filename \*filename,$/,/^	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);$/{
+/^\tstruct user_arg_ptr envp = /a\#ifdef CONFIG_KSU\n	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n
+}' fs/exec.c
+        # 3) hook call inside compat_do_execve() (32-bit su / 32-on-64)
+        sed -i '/^static int compat_do_execve(/,/^	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);$/{
+/\.ptr\.compat = __envp,/,/^\t};$/{
+/^\t};$/a\#ifdef CONFIG_KSU\n	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n
+}
+}' fs/exec.c
         ;;
 
-    ## open.c
+    # ------------------------------------------------------------ fs/open.c
     fs/open.c)
-        if grep -q "long do_faccessat(int dfd, const char __user \*filename, int mode)" fs/open.c; then
-            sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n			 int *flags);\n#endif' fs/open.c
-        else
-            sed -i '/SYSCALL_DEFINE3(faccessat, int, dfd, const char __user \*, filename, int, mode)/i\#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n			 int *flags);\n#endif' fs/open.c
-        fi
-        sed -i '/if (mode & ~S_IRWXO)/i\	#ifdef CONFIG_KSU\n	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n	#endif\n' fs/open.c
+        # extern declaration before SYSCALL_DEFINE3(faccessat, ...)
+        sed -i '/^ \* access() needs to use the real uid\/gid, not the effective uid\/gid\./,/^SYSCALL_DEFINE3(faccessat, int, dfd, const char __user \*, filename, int, mode)$/{
+/^SYSCALL_DEFINE3(faccessat, int, dfd, const char __user \*, filename, int, mode)$/i\#ifdef CONFIG_KSU\n__attribute__((hot))\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n				int *mode, int *flags);\n#endif\n
+}' fs/open.c
+        # hook call after 'unsigned int lookup_flags = LOOKUP_FOLLOW;'
+        sed -i '/^SYSCALL_DEFINE3(faccessat, int, dfd, const char __user \*, filename, int, mode)$/,/if (mode & ~S_IRWXO)/{
+/^\tunsigned int lookup_flags = LOOKUP_FOLLOW;$/a\#ifdef CONFIG_KSU\n	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n
+}' fs/open.c
         ;;
 
-    ## read_write.c
+    # ------------------------------------------------------ fs/read_write.c
     fs/read_write.c)
-        sed -i '/ssize_t vfs_read(struct file/i\#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n		size_t *count_ptr, loff_t **pos);\n#endif' fs/read_write.c
-        sed -i '/ssize_t vfs_read(struct file/,/ssize_t ret;/{/ssize_t ret;/a\
-        #ifdef CONFIG_KSU\
-        if (unlikely(ksu_vfs_read_hook))\
-            ksu_handle_vfs_read(&file, &buf, &count, &pos);\
-        #endif
-        }' fs/read_write.c
+        # extern declarations before SYSCALL_DEFINE3(read, ...)
+        sed -i '/^SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)$/i\#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,\n				char __user **buf_ptr, size_t *count_ptr);\n#endif\n' fs/read_write.c
+        # hook call right after 'struct fd f = fdget_pos(fd);' in read()
+        sed -i '/^SYSCALL_DEFINE3(read, unsigned int, fd, char __user \*, buf, size_t, count)$/,/^	if (f.file) {/{
+/^\tstruct fd f = fdget_pos(fd);$/a\#ifdef CONFIG_KSU\n	if (unlikely(ksu_vfs_read_hook))\n		ksu_handle_sys_read(fd, &buf, &count);\n#endif\n
+}' fs/read_write.c
         ;;
 
-    ## stat.c
+    # ------------------------------------------------------------ fs/stat.c
     fs/stat.c)
-        if grep -q "int vfs_statx(int dfd, const char __user \*filename, int flags," fs/stat.c; then
-            sed -i '/int vfs_statx(int dfd, const char __user \*filename, int flags,/i\#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif' fs/stat.c
-            sed -i '/unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;/a\\n	#ifdef CONFIG_KSU\n	ksu_handle_stat(&dfd, &filename, &flags);\n	#endif' fs/stat.c
-        else
-            sed -i '/int vfs_fstatat(int dfd, const char __user \*filename, struct kstat \*stat,/i\#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' fs/stat.c
-            sed -i '/if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |/i\	#ifdef CONFIG_KSU\n	ksu_handle_stat(&dfd, &filename, &flag);\n	#endif\n' fs/stat.c
-        fi
+        # extern declaration before the newfstatat block
+        sed -i '/^#if !defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_SYS_NEWFSTATAT)$/i\#ifdef CONFIG_KSU\n__attribute__((hot))\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n				int *flags);\n#endif\n' fs/stat.c
+        # hook call after 'int error;' in newfstatat()
+        sed -i '/^SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,$/,/^	error = vfs_fstatat(dfd, filename, &stat, flag);$/{
+/^\tint error;$/a\#ifdef CONFIG_KSU\n	ksu_handle_stat(&dfd, &filename, &flag);\n#endif\n
+}' fs/stat.c
         ;;
 
-    # drivers/input changes
-    ## input.c
-    drivers/input/input.c)
-        sed -i '/static void input_handle_event/i\#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif\n' drivers/input/input.c
-        sed -i '/int disposition = input_get_disposition(dev, type, code, &value);/a\	#ifdef CONFIG_KSU\n	if (unlikely(ksu_input_hook))\n		ksu_handle_input_handle_event(&type, &code, &value);\n	#endif' drivers/input/input.c
+    # ------------------------------------------------------- kernel/reboot.c
+    kernel/reboot.c)
+        # extern declaration before SYSCALL_DEFINE4(reboot, ...)
+        sed -i '/^SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,$/i\#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\n' kernel/reboot.c
+        # hook call after 'int ret = 0;' in reboot()
+        sed -i '/^SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,$/,/^	\/\* We only trust the superuser with rebooting the system\. \*\//{
+/^\tint ret = 0;$/a\#ifdef CONFIG_KSU\n	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n
+}' kernel/reboot.c
         ;;
+
     esac
-
 done
+
+echo "KernelSU-Next manual hooks applied."
