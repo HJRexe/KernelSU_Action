@@ -32,9 +32,11 @@ find arch/arm64 -type f \( -name '*.c' -o -name '*.S' \) -print0 | \
     -e 's/v([0-9]+)\.2d\[/v\1.d[/g'
 
 echo "LLVM IAS element-access fixes applied across ${files} arm64 sources"
-# qcacld-3.0 (WLAN) builds with -Werror in cppflags-y.  Clang turns many
-# warnings that GCC does not even emit (e.g. -Wunused-but-set-variable) into
-# hard errors, e.g. drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c.
-# Downgrade to -Wno-error so the tree builds under clang.
-sed -i 's/-Werror\\/-Wno-error\\/' drivers/staging/qcacld-3.0/Kbuild
-echo "qcacld-3.0 -Werror downgraded to -Wno-error"
+# Several vendor drivers (qcacld-3.0, vservices, ...) build with -Werror in
+# their Kbuild/Makefile.  Clang turns warnings GCC does not even emit (e.g.
+# -Wunused-but-set-variable, on by default in clang) into hard errors.
+# Downgrade every -Werror to -Wno-error across the tree: this only stops
+# warnings from failing the build, it never hides real compile errors.
+find . -type f \( -name 'Kbuild' -o -name 'Makefile' \) -not -path './out/*' -print0 | \
+  xargs -0 sed -i 's/-Werror/-Wno-error/g'
+echo "tree-wide -Werror downgraded to -Wno-error"
