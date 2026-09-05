@@ -385,6 +385,12 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 				hooks_patch_apply
 			fi
 
+			# LLVM integrated-assembler element-access rewrite for old arm64
+			# trees (see patches/clang-ias-fixes.sh); safe for GNU-as builds too.
+			if is_true "${ENABLE_IAS_FIXES:-true}"; then
+				( cd "$KERNEL_DIR" && bash "${REPO_ROOT}/patches/clang-ias-fixes.sh" )
+			fi
+
 			if is_true "${ENABLE_SUSFS:-false}";      then susfs_apply;      fi
 			if is_true "${ENABLE_HIDE_STUFF:-false}"; then hide_stuff_apply; fi
 			;;
