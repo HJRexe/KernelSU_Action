@@ -32,3 +32,9 @@ find arch/arm64 -type f \( -name '*.c' -o -name '*.S' \) -print0 | \
     -e 's/v([0-9]+)\.2d\[/v\1.d[/g'
 
 echo "LLVM IAS element-access fixes applied across ${files} arm64 sources"
+# qcacld-3.0 (WLAN) builds with -Werror in cppflags-y.  Clang turns many
+# warnings that GCC does not even emit (e.g. -Wunused-but-set-variable) into
+# hard errors, e.g. drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_assoc.c.
+# Downgrade to -Wno-error so the tree builds under clang.
+sed -i 's/-Werror\\/-Wno-error\\/' drivers/staging/qcacld-3.0/Kbuild
+echo "qcacld-3.0 -Werror downgraded to -Wno-error"
