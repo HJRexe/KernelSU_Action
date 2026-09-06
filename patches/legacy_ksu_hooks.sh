@@ -176,4 +176,38 @@ for asc in "${APK_SIGN_CANDIDATES[@]}"; do
     fi
 done
 
+# ------------------------------------------------------- drivers/kernelsu/manager/throne_tracker.c
+# FBE workaround for sdm845/4.9: CE storage (/data/app) returns ENOKEY
+# because the custom kernel cannot load CE keys. Fall back to a copy of the
+# manager APK in DE storage (/data/adb/manager.apk), accessible from early boot.
+THRONE_CANDIDATES=(
+    "drivers/kernelsu/manager/throne_tracker.c"
+    "KernelSU/kernel/manager/throne_tracker.c"
+)
+for tc in "${THRONE_CANDIDATES[@]}"; do
+    if [ -f "$tc" ]; then
+        if ! grep -q "DE fallback" "$tc"; then
+            echo "Patching $tc (DE storage manager fallback)"
+            python3 - "$tc" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path, 'r') as f:
+    src = f.read()
+old = '\t\tpr_info("Searching manager...\\n");\n\t\tsearch_manager("/data/app", 2, &uid_list);'
+new = '\t\tpr_info("Searching manager...\\n");\n\t\tif (is_manager_apk("/data/adb/manager.apk")) {\n\t\t\tpr_info("Found manager at /data/adb/manager.apk (DE fallback)\\n");\n\t\t\tcrown_manager("/data/adb/manager.apk", &uid_list);\n\t\t\tgoto prune;\n\t\t}\n\t\tsearch_manager("/data/app", 2, &uid_list);'
+if old in src:
+    src = src.replace(old, new, 1)
+    with open(path, 'w') as f:
+        f.write(src)
+    print("  patched successfully")
+else:
+    print("  ERROR: anchor not found")
+PYEOF
+        else
+            echo "Warning: $tc already has DE fallback; skipping"
+        fi
+        break
+    fi
+done
+
 echo "KernelSU-Next manual hooks applied."
