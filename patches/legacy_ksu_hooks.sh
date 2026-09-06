@@ -157,4 +157,23 @@ if [ "$BOOT_EVENT_PATCHED" -eq 0 ]; then
     echo "Warning: boot_event.c not found in any candidate path; skipping"
 fi
 
+# ------------------------------------------------------- drivers/kernelsu/manager/apk_sign.c
+# Debug: print filp_open error code to diagnose why is_manager_apk() fails
+# on sdm845/4.9 (returns -EACCES/-ENOKEY/-ENOENT without detail in dmesg).
+APK_SIGN_CANDIDATES=(
+    "drivers/kernelsu/manager/apk_sign.c"
+    "KernelSU/kernel/manager/apk_sign.c"
+)
+for asc in "${APK_SIGN_CANDIDATES[@]}"; do
+    if [ -f "$asc" ]; then
+        if ! grep -q "open %s error:" "$asc"; then
+            echo "Patching $asc (filp_open error code)"
+            sed -i 's/pr_err("open %s error\\.\\n", path);/pr_err("open %s error: %ld\\n", path, PTR_ERR(fp));/' "$asc"
+        else
+            echo "Warning: $asc already has error code debug; skipping"
+        fi
+        break
+    fi
+done
+
 echo "KernelSU-Next manual hooks applied."
