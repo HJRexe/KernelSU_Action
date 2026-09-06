@@ -233,4 +233,40 @@ for ic in "${INIT_CANDIDATES[@]}"; do
     fi
 done
 
+
+# ------------------------------------------------------- drivers/kernelsu/manager/apk_sign.c
+# Root cause of persistent -ENOKEY: override_creds(ksu_cred) in track_throne
+# switches the task keyring, and ksu_cred has no fscrypt keys. Temporarily
+# override with current->real_cred (kworker real cred, inherits init keyring)
+# only around the filp_open in check_v2_signature().
+APK_SIGN2_CANDIDATES=(
+    "drivers/kernelsu/manager/apk_sign.c"
+    "KernelSU/kernel/manager/apk_sign.c"
+)
+for asc2 in "${APK_SIGN2_CANDIDATES[@]}"; do
+    if [ -f "$asc2" ]; then
+        if ! grep -q "real_cred for fscrypt" "$asc2"; then
+            echo "Patching $asc2 (temporarily use real_cred around filp_open)"
+            python3 - "$asc2" <<'PYEOF2'
+import sys
+path = sys.argv[1]
+with open(path, 'r') as f:
+    src = f.read()
+old = '\tstruct file *fp = ksu_filp_open_compat(path, O_RDONLY, 0);'
+new = '\t// Temporarily use real_cred for fscrypt key access (sdm845/4.9 ENOKEY)\n\tconst struct cred *__real_cred_saved = override_creds(current->real_cred);\n\tstruct file *fp = ksu_filp_open_compat(path, O_RDONLY, 0);\n\trevert_creds(__real_cred_saved);'
+if old in src:
+    src = src.replace(old, new, 1)
+    with open(path, 'w') as f:
+        f.write(src)
+    print("  patched successfully")
+else:
+    print("  ERROR: anchor not found")
+PYEOF2
+        else
+            echo "Warning: $asc2 already has real_cred patch; skipping"
+        fi
+        break
+    fi
+done
+
 echo "KernelSU-Next manual hooks applied."
