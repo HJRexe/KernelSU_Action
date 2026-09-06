@@ -114,4 +114,18 @@ for i in "${patch_files[@]}"; do
     esac
 done
 
+# ------------------------------------------------------- security/selinux/hooks.c
+# Allow init -> ksu bounded domain transition (Android 11+ NNP/nosuid blocks it)
+if [ -f security/selinux/hooks.c ]; then
+    if ! grep -q "is_ksu_transition" security/selinux/hooks.c; then
+        echo "Patching security/selinux/hooks.c"
+        # extern declaration before check_nnp_nosuid()
+        sed -i '/^static int check_nnp_nosuid(/i\#ifdef CONFIG_KSU\nextern bool is_ksu_transition(const struct task_security_struct *old_tsec,\n\t\t      const struct task_security_struct *new_tsec);\n#endif\n' security/selinux/hooks.c
+        # early return for init -> ksu transition, skip security_bounded_transition()
+        sed -i '/No change in credentials/a\#ifdef CONFIG_KSU\n\tif (is_ksu_transition(old_tsec, new_tsec))\n\t\treturn 0;\n#endif\n' security/selinux/hooks.c
+    else
+        echo "Warning: security/selinux/hooks.c already contains is_ksu_transition; skipping"
+    fi
+fi
+
 echo "KernelSU-Next manual hooks applied."
