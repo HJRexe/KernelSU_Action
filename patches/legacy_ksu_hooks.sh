@@ -128,4 +128,21 @@ if [ -f security/selinux/hooks.c ]; then
     fi
 fi
 
+# ------------------------------------------------------- KernelSU/kernel/runtime/boot_event.c
+# Fix FBE race: observer triggers first track_throne at ~12s before user
+# unlocks /data/app (CE storage), so is_manager_apk() filp_open fails and
+# manager is never crowned. on_boot_completed() then calls track_throne(true)
+# which is prune-only (no re-search). Change to track_throne(false) so
+# boot_completed re-scans /data/app after unlock.
+if [ -f KernelSU/kernel/runtime/boot_event.c ]; then
+    if ! grep -q "track_throne(false)" KernelSU/kernel/runtime/boot_event.c; then
+        echo "Patching KernelSU/kernel/runtime/boot_event.c (track_throne false)"
+        sed -i 's/track_throne(true)/track_throne(false)/' KernelSU/kernel/runtime/boot_event.c
+    else
+        echo "Warning: boot_event.c already has track_throne(false); skipping"
+    fi
+else
+    echo "Warning: KernelSU/kernel/runtime/boot_event.c not found; skipping"
+fi
+
 echo "KernelSU-Next manual hooks applied."
