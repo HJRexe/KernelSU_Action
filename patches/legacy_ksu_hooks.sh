@@ -57,6 +57,16 @@ for i in "${patch_files[@]}"; do
 /^\t};$/a\#ifdef CONFIG_KSU\n	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n
 }
 }' fs/exec.c
+        # 4) hook call inside do_execveat() — 64-bit execveat(2) path used by A11 bionic
+        sed -i '/^int do_execveat(int fd, struct filename \*filename,$/,/^	return do_execveat_common(fd, filename, argv, envp, flags);$/{
+/^\tstruct user_arg_ptr envp = /a\#ifdef CONFIG_KSU\n	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n
+}' fs/exec.c
+        # 5) hook call inside compat_do_execveat() — 32-bit execveat on 64-bit kernel
+        sed -i '/^static int compat_do_execveat(int fd, struct filename \*filename,$/,/^	return do_execveat_common(fd, filename, argv, envp, flags);$/{
+/\.ptr\.compat = __envp,/,/^\t};$/{
+/^\t};$/a\#ifdef CONFIG_KSU\n	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif\n
+}
+}' fs/exec.c
         ;;
 
     # ------------------------------------------------------------ fs/open.c
