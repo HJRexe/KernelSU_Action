@@ -128,21 +128,33 @@ if [ -f security/selinux/hooks.c ]; then
     fi
 fi
 
-# ------------------------------------------------------- KernelSU/kernel/runtime/boot_event.c
+# ------------------------------------------------------- drivers/kernelsu/runtime/boot_event.c
 # Fix FBE race: observer triggers first track_throne at ~12s before user
 # unlocks /data/app (CE storage), so is_manager_apk() filp_open fails and
 # manager is never crowned. on_boot_completed() then calls track_throne(true)
 # which is prune-only (no re-search). Change to track_throne(false) so
 # boot_completed re-scans /data/app after unlock.
-if [ -f KernelSU/kernel/runtime/boot_event.c ]; then
-    if ! grep -q "track_throne(false)" KernelSU/kernel/runtime/boot_event.c; then
-        echo "Patching KernelSU/kernel/runtime/boot_event.c (track_throne false)"
-        sed -i 's/track_throne(true)/track_throne(false)/' KernelSU/kernel/runtime/boot_event.c
-    else
-        echo "Warning: boot_event.c already has track_throne(false); skipping"
+BOOT_EVENT_CANDIDATES=(
+    "drivers/kernelsu/runtime/boot_event.c"
+    "KernelSU/kernel/runtime/boot_event.c"
+)
+BOOT_EVENT_PATCHED=0
+for bec in "${BOOT_EVENT_CANDIDATES[@]}"; do
+    if [ -f "$bec" ]; then
+        if ! grep -q "track_throne(false)" "$bec"; then
+            echo "Patching $bec (track_throne false)"
+            sed -i 's/track_throne(true)/track_throne(false)/' "$bec"
+            BOOT_EVENT_PATCHED=1
+            break
+        else
+            echo "Warning: $bec already has track_throne(false); skipping"
+            BOOT_EVENT_PATCHED=1
+            break
+        fi
     fi
-else
-    echo "Warning: KernelSU/kernel/runtime/boot_event.c not found; skipping"
+done
+if [ "$BOOT_EVENT_PATCHED" -eq 0 ]; then
+    echo "Warning: boot_event.c not found in any candidate path; skipping"
 fi
 
 echo "KernelSU-Next manual hooks applied."
