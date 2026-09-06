@@ -168,7 +168,7 @@ for asc in "${APK_SIGN_CANDIDATES[@]}"; do
     if [ -f "$asc" ]; then
         if ! grep -q "open %s error:" "$asc"; then
             echo "Patching $asc (filp_open error code)"
-            sed -i 's/pr_err("open %s error\\.\\n", path);/pr_err("open %s error: %ld\\n", path, PTR_ERR(fp));/' "$asc"
+            sed -i 's/pr_err("open %s error\.\\n", path);/pr_err("open %s error: %ld\\n", path, PTR_ERR(fp));/' "$asc"
         else
             echo "Warning: $asc already has error code debug; skipping"
         fi
