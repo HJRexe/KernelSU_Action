@@ -210,4 +210,27 @@ PYEOF
     fi
 done
 
+# ------------------------------------------------------- drivers/kernelsu/core/init.c
+# Root cause of ENOKEY on sdm845/4.9: ksu_cred created via prepare_creds()
+# copies the calling task's cred (idle/kthread), which has no fscrypt key
+# access. When track_throne does override_creds(ksu_cred), every filp_open
+# on /data returns -ENOKEY. Switch to prepare_kernel_cred(0) which creates
+# a pure root cred with full key access.
+INIT_CANDIDATES=(
+    "drivers/kernelsu/core/init.c"
+    "KernelSU/kernel/core/init.c"
+)
+for ic in "${INIT_CANDIDATES[@]}"; do
+    if [ -f "$ic" ]; then
+        if ! grep -q "prepare_kernel_cred(0)" "$ic"; then
+            echo "Patching $ic (ksu_cred = prepare_kernel_cred(0))"
+            sed -i 's/ksu_cred = prepare_creds();/ksu_cred = prepare_kernel_cred(0);/' "$ic"
+            grep -q "prepare_kernel_cred(0)" "$ic" && echo "  patched successfully" || echo "  ERROR: patch failed"
+        else
+            echo "Warning: $ic already has prepare_kernel_cred(0); skipping"
+        fi
+        break
+    fi
+done
+
 echo "KernelSU-Next manual hooks applied."
